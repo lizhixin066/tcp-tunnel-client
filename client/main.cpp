@@ -62,7 +62,8 @@ void PostUiEvent(HWND window, UiEventKind kind, std::uint64_t id,
 }
 
 std::wstring SocketErrorText(int code = WSAGetLastError()) {
-    return L"Winsock error " + std::to_wstring(code);
+    // 保留 Windows 套接字错误码，方便排查；前面的描述始终使用中文。
+    return L"网络错误（Winsock 错误码 " + std::to_wstring(code) + L"）";
 }
 
 bool WideToUtf8(const std::wstring& value, std::string& result) {
@@ -217,7 +218,7 @@ private:
         addrinfo* raw = nullptr;
         const int lookup = getaddrinfo(host.c_str(), port.c_str(), &hints, &raw);
         if (lookup != 0) {
-            error = L"DNS lookup failed (" + std::to_wstring(lookup) + L")";
+            error = L"地址解析失败（错误码 " + std::to_wstring(lookup) + L"）";
             return false;
         }
         std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw,
@@ -297,9 +298,9 @@ private:
             destination = std::move(candidate);
             return true;
         }
-        if (Cancelled(epoch)) error = L"Cancelled";
+        if (Cancelled(epoch)) error = L"操作已取消";
         else if (std::chrono::steady_clock::now() >= deadline)
-            error = L"Connection timed out";
+            error = L"连接超时";
         return false;
     }
 
@@ -392,8 +393,8 @@ private:
         if (!ConnectTcp(config_.serverHost, config_.serverPort, epoch,
                         data, error)) {
             if (!Cancelled(epoch))
-                Log(L"Tunnel " + std::to_wstring(id) +
-                    L": data connection failed: " + error);
+                Log(L"转发连接 " + std::to_wstring(id) +
+                    L"：连接服务端失败：" + error);
             return;
         }
         const std::string command = "DATA " + config_.token + " " +
@@ -404,18 +405,18 @@ private:
                       std::chrono::steady_clock::now() + kHandshakeTimeout) ||
             reply != "OK") {
             if (!Cancelled(epoch))
-                Log(L"Tunnel " + std::to_wstring(id) +
-                    L": server rejected data connection");
+                Log(L"转发连接 " + std::to_wstring(id) +
+                    L"：服务端拒绝数据连接");
             return;
         }
         if (!ConnectTcp(config_.localHost, config_.localPort, epoch,
                         local, error)) {
             if (!Cancelled(epoch))
-                Log(L"Tunnel " + std::to_wstring(id) +
-                    L": local connection failed: " + error);
+                Log(L"转发连接 " + std::to_wstring(id) +
+                    L"：连接本地服务失败：" + error);
             return;
         }
-        Log(L"Tunnel " + std::to_wstring(id) + L" opened");
+        Log(L"转发连接 " + std::to_wstring(id) + L" 已建立");
         try {
             std::thread inbound([this, from = data.Get(), to = local.Get(), epoch] {
                 Pump(from, to, epoch);
@@ -425,10 +426,10 @@ private:
         } catch (const std::system_error&) {
             shutdown(local.Get(), SD_BOTH);
             shutdown(data.Get(), SD_BOTH);
-            Log(L"Tunnel " + std::to_wstring(id) +
-                L": unable to start relay thread");
+            Log(L"转发连接 " + std::to_wstring(id) +
+                L"：无法启动转发线程");
         }
-        Log(L"Tunnel " + std::to_wstring(id) + L" closed");
+        Log(L"转发连接 " + std::to_wstring(id) + L" 已关闭");
     }
 
     void JoinTunnels() {
@@ -463,8 +464,8 @@ private:
                 try {
                     RunTunnel(tunnelId, epoch);
                 } catch (const std::exception&) {
-                    Log(L"Tunnel " + std::to_wstring(tunnelId) +
-                        L": unexpected error");
+                    Log(L"转发连接 " + std::to_wstring(tunnelId) +
+                        L"：发生意外错误");
                 }
                 finished->store(true);
             });
@@ -480,10 +481,10 @@ private:
                 const std::uint64_t epoch = epoch_.load();
                 SocketOwner control;
                 std::wstring error;
-                Status(L"Connecting...");
+                Status(L"连接中...");
                 if (!ConnectTcp(config_.serverHost, config_.serverPort, epoch,
                                 control, error)) {
-                    if (!stopping_.load()) Log(L"Server connection failed: " + error);
+                    if (!stopping_.load()) Log(L"连接服务端失败：" + error);
                 } else {
                     std::string reply;
                     const std::string hello = "HELLO " + config_.token + "\n";
@@ -491,13 +492,13 @@ private:
                         !ReadLine(control.Get(), reply, epoch,
                                   std::chrono::steady_clock::now() +
                                       kHandshakeTimeout)) {
-                        if (!stopping_.load()) Log(L"Server handshake failed");
+                        if (!stopping_.load()) Log(L"与服务端握手失败");
                     } else if (reply != "OK") {
-                        Log(L"Server rejected token or protocol version");
+                        Log(L"服务端拒绝连接：请检查密钥和协议版本");
                         break;
                     } else {
-                        Status(L"Connected");
-                        Log(L"Control connection established");
+                        Status(L"已连接");
+                        Log(L"控制连接已建立");
                         std::string line;
                         while (!Cancelled(epoch) &&
                                ReadLine(control.Get(), line, epoch)) {
@@ -509,16 +510,16 @@ private:
                             }
                             std::uint64_t tunnelId = 0;
                             if (!ParseOpen(line, tunnelId)) {
-                                Log(L"Received invalid control command");
+                                Log(L"收到无效的控制命令");
                                 break;
                             }
                             try {
                                 StartTunnel(tunnelId, epoch);
                             } catch (const std::system_error&) {
-                                Log(L"Unable to start tunnel thread");
+                                Log(L"无法启动转发线程");
                             }
                         }
-                        if (!stopping_.load()) Log(L"Control connection lost");
+                        if (!stopping_.load()) Log(L"控制连接已断开");
                     }
                 }
 
@@ -529,16 +530,16 @@ private:
                 ShutdownSockets();
                 JoinTunnels();
                 if (stopping_.load()) break;
-                Status(L"Reconnecting...");
+                Status(L"正在重连...");
                 for (int i = 0; i < 20 && !stopping_.load(); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         } catch (const std::exception&) {
-            Log(L"Unexpected client error");
+            Log(L"客户端发生意外错误");
             RequestStop();
             JoinTunnels();
         }
-        Status(L"Disconnected");
+        Status(L"未连接");
         PostUiEvent(window_, UiEventKind::Finished, id_);
     }
 
@@ -669,17 +670,18 @@ HWND MakeControl(HWND parent, DWORD exStyle, const wchar_t* className,
 }
 
 void CreateControls(App& app) {
-    app.labels[0] = MakeControl(app.window, 0, L"STATIC", L"Server host",
+    // 控件使用 Unicode API，中文标签与状态不会受系统 ANSI 代码页影响。
+    app.labels[0] = MakeControl(app.window, 0, L"STATIC", L"服务端地址",
                                 SS_LEFT);
-    app.labels[1] = MakeControl(app.window, 0, L"STATIC", L"Control port",
+    app.labels[1] = MakeControl(app.window, 0, L"STATIC", L"控制端口",
                                 SS_LEFT);
-    app.labels[2] = MakeControl(app.window, 0, L"STATIC", L"Local host",
+    app.labels[2] = MakeControl(app.window, 0, L"STATIC", L"本地地址",
                                 SS_LEFT);
-    app.labels[3] = MakeControl(app.window, 0, L"STATIC", L"Local port",
+    app.labels[3] = MakeControl(app.window, 0, L"STATIC", L"本地端口",
                                 SS_LEFT);
-    app.labels[4] = MakeControl(app.window, 0, L"STATIC", L"Token",
+    app.labels[4] = MakeControl(app.window, 0, L"STATIC", L"连接密钥",
                                 SS_LEFT);
-    app.labels[5] = MakeControl(app.window, 0, L"STATIC", L"Activity log",
+    app.labels[5] = MakeControl(app.window, 0, L"STATIC", L"运行日志",
                                 SS_LEFT);
     const DWORD editStyle = ES_AUTOHSCROLL | WS_TABSTOP;
     app.serverHost = MakeControl(app.window, WS_EX_CLIENTEDGE, L"EDIT",
@@ -692,14 +694,14 @@ void CreateControls(App& app) {
                                 L"8080", editStyle | ES_NUMBER);
     app.token = MakeControl(app.window, WS_EX_CLIENTEDGE, L"EDIT", L"",
                             editStyle | ES_PASSWORD);
-    app.connectButton = MakeControl(app.window, 0, L"BUTTON", L"Connect",
+    app.connectButton = MakeControl(app.window, 0, L"BUTTON", L"连接",
                                     BS_PUSHBUTTON | WS_TABSTOP,
                                     kConnectButtonId);
     app.disconnectButton = MakeControl(app.window, 0, L"BUTTON",
-                                       L"Disconnect",
+                                       L"断开",
                                        BS_PUSHBUTTON | WS_TABSTOP,
                                        kDisconnectButtonId);
-    app.status = MakeControl(app.window, 0, L"STATIC", L"Disconnected",
+    app.status = MakeControl(app.window, 0, L"STATIC", L"未连接",
                              SS_LEFT);
     app.log = MakeControl(app.window, WS_EX_CLIENTEDGE, L"EDIT", L"",
                           ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
@@ -720,15 +722,15 @@ bool ReadConfig(App& app, Config& config, std::wstring& error) {
     Trim(localPort);
     Trim(token);
     if (!ValidHost(serverHost) || !ValidHost(localHost)) {
-        error = L"Enter a valid server and local host.";
+        error = L"请输入有效的服务端地址和本地地址。";
         return false;
     }
     if (!ValidPort(serverPort) || !ValidPort(localPort)) {
-        error = L"Ports must be between 1 and 65535.";
+        error = L"端口必须是 1 到 65535 之间的整数。";
         return false;
     }
     if (!ValidToken(token)) {
-        error = L"Token must contain 1-256 visible ASCII characters, no spaces.";
+        error = L"连接密钥必须为 1 至 256 个可见 ASCII 字符，不能包含空格。";
         return false;
     }
     if (!WideToUtf8(serverHost, config.serverHost) ||
@@ -736,7 +738,7 @@ bool ReadConfig(App& app, Config& config, std::wstring& error) {
         !WideToUtf8(localHost, config.localHost) ||
         !WideToUtf8(localPort, config.localPort) ||
         !WideToUtf8(token, config.token)) {
-        error = L"Unable to encode input as UTF-8.";
+        error = L"无法将输入内容编码为 UTF-8。";
         return false;
     }
     return true;
@@ -747,7 +749,7 @@ void Connect(App& app) {
     Config config;
     std::wstring error;
     if (!ReadConfig(app, config, error)) {
-        MessageBoxW(app.window, error.c_str(), L"Invalid settings",
+        MessageBoxW(app.window, error.c_str(), L"设置无效",
                     MB_OK | MB_ICONWARNING);
         return;
     }
@@ -756,16 +758,16 @@ void Connect(App& app) {
     app.active = session.get();
     app.sessions.push_back(std::move(session));
     UpdateButtons(app);
-    SetWindowTextW(app.status, L"Connecting...");
-    AppendLog(app.log, L"Starting client");
+    SetWindowTextW(app.status, L"连接中...");
+    AppendLog(app.log, L"正在启动客户端");
     try {
         app.active->Start();
     } catch (const std::system_error&) {
         app.sessions.pop_back();
         app.active = nullptr;
         UpdateButtons(app);
-        SetWindowTextW(app.status, L"Disconnected");
-        AppendLog(app.log, L"Unable to start connection thread");
+        SetWindowTextW(app.status, L"未连接");
+        AppendLog(app.log, L"无法启动连接线程");
     }
 }
 
@@ -774,8 +776,8 @@ void Disconnect(App& app) {
     app.active->RequestStop();
     app.active = nullptr;
     UpdateButtons(app);
-    SetWindowTextW(app.status, L"Disconnecting...");
-    AppendLog(app.log, L"Disconnect requested");
+    SetWindowTextW(app.status, L"正在断开...");
+    AppendLog(app.log, L"已请求断开连接");
 }
 
 void HandleUiEvent(App& app, std::unique_ptr<UiEvent> event) {
@@ -797,7 +799,7 @@ void HandleUiEvent(App& app, std::unique_ptr<UiEvent> event) {
         if (app.active == it->get()) app.active = nullptr;
         if (!app.active) {
             UpdateButtons(app);
-            SetWindowTextW(app.status, L"Disconnected");
+            SetWindowTextW(app.status, L"未连接");
         }
         app.sessions.erase(it);
     }
@@ -871,7 +873,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam,
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
-        MessageBoxW(nullptr, L"Unable to initialize Winsock.", L"Client",
+        MessageBoxW(nullptr, L"无法初始化 Windows 网络组件。", L"内网穿透客户端",
                     MB_OK | MB_ICONERROR);
         return 1;
     }
@@ -890,7 +892,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
 
     App app;
     HWND window = CreateWindowExW(
-        0, className, L"Reverse Port Forward Client",
+        0, className, L"TCP 内网穿透客户端",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 760, 550,
         nullptr, nullptr, instance, &app);
     if (!window) {

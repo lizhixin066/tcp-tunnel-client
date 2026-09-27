@@ -1,6 +1,6 @@
 # TCP 内网穿透客户端（Windows）
 
-这是一个原生 C++ / Win32 图形客户端。客户端从内网主动连接 [Ubuntu 服务端](https://github.com/lizhixin066/tcp-tunnel-server)，把服务端公开端口收到的 TCP 连接转发至本机或内网里的 TCP 服务。客户端无需配置路由器入站端口映射。
+这是一个原生 C++ / Win32 图形客户端。窗口、状态、日志和错误提示均使用简体中文。客户端从内网主动连接 [Ubuntu 服务端](https://github.com/lizhixin066/tcp-tunnel-server)，把服务端公开端口收到的 TCP 连接转发至本机或内网里的 TCP 服务。客户端无需配置路由器入站端口映射。
 
 ## 仓库内容
 
