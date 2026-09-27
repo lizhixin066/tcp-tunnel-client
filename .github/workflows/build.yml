@@ -38,6 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           tag="build-$GITHUB_SHA"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release edit "$tag" --latest
@@ -47,3 +48,4 @@ jobs:
               --title "Build ${GITHUB_SHA:0:12}" \
               --notes "Built with Visual Studio 2022 from commit $GITHUB_SHA." \
               --latest
+          fi
