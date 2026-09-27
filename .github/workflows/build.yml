@@ -1,0 +1,49 @@
+name: Build Windows client
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v3
+      - name: Build with Visual Studio 2022
+        run: msbuild Tunnel.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: bin/x64/Release/TunnelClient.exe
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-client
+          path: dist
+      - name: Publish client executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-$GITHUB_SHA"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --latest
+          else
+            gh release create "$tag" dist/TunnelClient.exe \
+              --target "$GITHUB_SHA" \
+              --title "Build ${GITHUB_SHA:0:12}" \
+              --notes "Built with Visual Studio 2022 from commit $GITHUB_SHA." \
+              --latest
